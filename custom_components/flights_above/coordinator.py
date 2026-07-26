@@ -52,6 +52,18 @@ CO2_KG_PER_KM = {
     "unknown": 9.0,
 }
 
+# Typical cruise speed (km/h) by aircraft class. Used for flight-time estimates
+# so a plane that is climbing or descending slowly does not produce absurd ETAs.
+CRUISE_KMH = {
+    "widebody": 900,
+    "narrowbody": 830,
+    "regional": 700,
+    "turboprop": 500,
+    "bizjet": 780,
+    "piston": 240,
+    "unknown": 820,
+}
+
 _WIDEBODY = {
     "A332", "A333", "A337", "A338", "A339", "A342", "A343", "A345", "A346",
     "A359", "A35K", "A388", "B742", "B743", "B744", "B748", "B74S", "B762",
@@ -258,6 +270,8 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         self._session = async_get_clientsession(hass)
         # callsign -> (route dict | None, timestamp)
         self._route_cache: dict[str, tuple[dict | None, float]] = {}
+        # icao -> airport info dict | False (hexdb fallback lookups)
+        self._airport_cache: dict[str, dict | bool] = {}
         # hex -> flight dict (rolling history of recently seen flights)
         self._history: dict[str, dict] = {}
         # True number of airborne aircraft currently inside the radius.
@@ -523,9 +537,15 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         flight["co2_so_far_kg"] = round(flown * factor)
         flight["co2_remaining_kg"] = round(remaining * factor)
 
-        if speed_kmh and speed_kmh > 50:
-            hours_flown = flown / speed_kmh
-            hours_remaining = remaining / speed_kmh
+        # Estimate flight time from a stable cruise speed for the aircraft class.
+        # We only trust the live ground speed when it looks like cruise (>= 500
+        # km/h); during climb or descent it is far too low and would inflate the
+        # remaining time (e.g. a 4 h hop reading as 17 h).
+        cruise = CRUISE_KMH.get(flight["emissions_class"], CRUISE_KMH["unknown"])
+        effective = speed_kmh if speed_kmh and speed_kmh >= 500 else cruise
+        if effective > 0:
+            hours_flown = flown / effective
+            hours_remaining = remaining / effective
             flight["hours_flown"] = round(hours_flown, 1)
             flight["hours_remaining"] = round(hours_remaining, 1)
             flight["hours_total"] = round(hours_flown + hours_remaining, 1)
@@ -575,11 +595,17 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         safe = _safe_callsign(callsign)
         if not safe:
             return None
+        # Primary source, then fall back to hexdb.io so far fewer flights end up
+        # without route data.
+        return await self._fetch_route_adsbdb(safe) or await self._fetch_route_hexdb(safe)
+
+    async def _fetch_route_adsbdb(self, safe: str) -> dict | None:
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
-        url = f"{ADSBDB_CALLSIGN_URL}{safe}"
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT):
-                resp = await self._session.get(url, headers=headers)
+                resp = await self._session.get(
+                    f"{ADSBDB_CALLSIGN_URL}{safe}", headers=headers
+                )
                 if resp.status != 200:
                     return None
                 payload = await resp.json(content_type=None)
@@ -613,3 +639,60 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
             "destination_lat": _valid_lat(destination.get("latitude")),
             "destination_lon": _valid_lon(destination.get("longitude")),
         }
+
+    async def _fetch_route_hexdb(self, safe: str) -> dict | None:
+        """Fallback route source: hexdb.io gives ORIG-DEST ICAO codes."""
+        data = await self._hexdb_get(f"route/icao/{safe}")
+        route = data.get("route") if isinstance(data, dict) else None
+        if not isinstance(route, str) or "-" not in route:
+            return None
+        parts = route.split("-")
+        if len(parts) != 2:
+            return None  # skip multi-leg routes we cannot place
+        origin = await self._hexdb_airport(_safe_callsign(parts[0]), "origin")
+        destination = await self._hexdb_airport(_safe_callsign(parts[1]), "destination")
+        if not origin or not destination:
+            return None
+        return {**origin, **destination}
+
+    async def _hexdb_airport(self, icao: str, side: str) -> dict | None:
+        if not icao:
+            return None
+        cached = self._airport_cache.get(icao)
+        if cached is None:
+            data = await self._hexdb_get(f"airport/icao/{icao}")
+            if isinstance(data, dict) and data.get("latitude") is not None:
+                cached = {
+                    "name": _clean_text(data.get("airport")),
+                    "iata": _clean_text(data.get("iata"), 4),
+                    "icao": _clean_text(data.get("icao"), 4) or icao,
+                    "country": _clean_text(data.get("country_code"), 4),
+                    "lat": _valid_lat(data.get("latitude")),
+                    "lon": _valid_lon(data.get("longitude")),
+                }
+            else:
+                cached = False
+            self._airport_cache[icao] = cached
+        if not cached:
+            return None
+        return {
+            f"{side}_name": cached["name"],
+            f"{side}_iata": cached["iata"],
+            f"{side}_icao": cached["icao"],
+            f"{side}_country": cached["country"],
+            f"{side}_lat": cached["lat"],
+            f"{side}_lon": cached["lon"],
+        }
+
+    async def _hexdb_get(self, path: str) -> dict | None:
+        headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT):
+                resp = await self._session.get(
+                    f"https://hexdb.io/api/v1/{path}", headers=headers
+                )
+                if resp.status != 200:
+                    return None
+                return await resp.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            return None

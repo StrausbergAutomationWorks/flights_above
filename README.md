@@ -21,11 +21,15 @@ to pay**:
 | Purpose | Source | Cost |
 |---|---|---|
 | Live aircraft positions | [adsb.lol](https://adsb.lol) → falls back to [airplanes.live](https://airplanes.live) | Free, no key |
-| Departure / arrival airports | [adsbdb.com](https://www.adsbdb.com) | Free, no key |
+| Departure / arrival airports | [adsbdb.com](https://www.adsbdb.com) → falls back to [hexdb.io](https://hexdb.io) | Free, no key |
 
-Flight-hours are **estimated** from great-circle distances and the aircraft's
-ground speed (these APIs don't publish scheduled times), so treat them as a good
-approximation rather than an airline timetable.
+Two route sources are tried in turn, so far fewer flights end up without a route.
+
+Flight-hours are **estimated** from great-circle distances and a typical cruise
+speed for the aircraft type (these APIs don't publish scheduled times). Cruise
+speed is used rather than the live ground speed so a plane that is climbing or
+descending slowly doesn't read as a much longer flight than it is. Treat the times
+as a good approximation, not an airline timetable.
 
 ---
 
