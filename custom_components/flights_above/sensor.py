@@ -16,6 +16,10 @@ from .coordinator import FlightsAboveCoordinator
 _FLIGHT_ATTRS = (
     "registration",
     "aircraft_type",
+    "aircraft_name",
+    "aircraft_manufacturer",
+    "operator",
+    "operator_code",
     "latitude",
     "longitude",
     "altitude_ft",

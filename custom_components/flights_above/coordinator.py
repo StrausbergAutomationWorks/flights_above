@@ -17,7 +17,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
-    ADSB_POINT_BASES,
+    ADSB_POINT_URLS,
     ADSBDB_CALLSIGN_URL,
     CONF_COUNT,
     CONF_RADIUS,
@@ -37,6 +37,8 @@ from .const import (
     ROUTE_MISS_TTL,
     USER_AGENT,
 )
+from .aircraft import describe_aircraft, lookup_manufacturer
+from .airlines import lookup_operator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -357,8 +359,10 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
         last_error: Exception | None = None
 
-        for base in ADSB_POINT_BASES:
-            url = f"{base}/{self.latitude}/{self.longitude}/{radius_nm}"
+        for template in ADSB_POINT_URLS:
+            url = template.format(
+                lat=self.latitude, lon=self.longitude, nm=radius_nm
+            )
             try:
                 async with asyncio.timeout(REQUEST_TIMEOUT):
                     resp = await self._session.get(url, headers=headers)
@@ -373,7 +377,13 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
             if not isinstance(payload, dict):
                 last_error = UpdateFailed(f"{url} returned a non-object body")
                 continue
-            aircraft = payload.get("ac") or payload.get("aircraft") or []
+            if "ac" in payload:
+                aircraft = payload["ac"]
+            elif "aircraft" in payload:
+                aircraft = payload["aircraft"]
+            else:
+                last_error = UpdateFailed(f"{url} returned no aircraft list")
+                continue
             if not isinstance(aircraft, list):
                 last_error = UpdateFailed(f"{url} returned an unexpected shape")
                 continue
@@ -431,6 +441,9 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         seats_typical, people_on_board = _people_on_board(
             aircraft_type, emissions_class
         )
+        operator_code, operator = lookup_operator(display_callsign)
+        aircraft_name = describe_aircraft(aircraft_type)
+        aircraft_manufacturer = lookup_manufacturer(aircraft_type)
 
         # Vertical movement / climb state from barometric rate (ft/min).
         vr = _finite(ac.get("baro_rate"))
@@ -451,6 +464,10 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
             "callsign": display_callsign,
             "registration": registration,
             "aircraft_type": aircraft_type,
+            "aircraft_name": aircraft_name,
+            "aircraft_manufacturer": aircraft_manufacturer,
+            "operator": operator,
+            "operator_code": operator_code,
             "latitude": lat,
             "longitude": lon,
             "altitude_ft": altitude_ft,
