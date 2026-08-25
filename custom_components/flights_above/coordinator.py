@@ -39,6 +39,7 @@ from .const import (
 )
 from .aircraft import describe_aircraft, lookup_manufacturer
 from .airlines import lookup_operator
+from .registrations import lookup_government
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -442,6 +443,18 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
             aircraft_type, emissions_class
         )
         operator_code, operator = lookup_operator(display_callsign)
+
+        # An aircraft squawking its own registration has no callsign to
+        # resolve, so lookup_operator falls back to "Private / General
+        # Aviation". That is right for a private Cessna and wrong for a
+        # sheriff's helicopter. The FAA registry knows the difference, keyed
+        # by the Mode S address. Returns None outside the US ICAO block, so
+        # this costs one integer comparison for non-US traffic.
+        gov = lookup_government(hex_id)
+        operator_category = None
+        if gov:
+            operator = gov["operator"] or operator
+            operator_category = gov["operator_category"]
         aircraft_name = describe_aircraft(aircraft_type)
         aircraft_manufacturer = lookup_manufacturer(aircraft_type)
 
@@ -468,6 +481,7 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
             "aircraft_manufacturer": aircraft_manufacturer,
             "operator": operator,
             "operator_code": operator_code,
+            "operator_category": operator_category,
             "latitude": lat,
             "longitude": lon,
             "altitude_ft": altitude_ft,

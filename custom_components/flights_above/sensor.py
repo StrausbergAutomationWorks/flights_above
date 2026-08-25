@@ -20,6 +20,7 @@ _FLIGHT_ATTRS = (
     "aircraft_manufacturer",
     "operator",
     "operator_code",
+    "operator_category",
     "latitude",
     "longitude",
     "altitude_ft",

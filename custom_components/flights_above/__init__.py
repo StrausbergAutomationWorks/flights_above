@@ -7,11 +7,15 @@ import os
 
 import homeassistant.helpers.config_validation as cv
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from datetime import timedelta
+
+from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_interval
 
 from .const import DOMAIN
 from .coordinator import FlightsAboveCoordinator
+from .registrations import async_load_registry, async_refresh_registry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,6 +80,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Flights Above from a config entry."""
     coordinator = FlightsAboveCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
+
+    # Government aircraft registry: load whatever table exists, then refresh in
+    # the background if it is stale. Dormant outside the US, and every failure
+    # path leaves flight tracking untouched.
+    opts = {**entry.data, **entry.options}
+    lat = opts.get(CONF_LATITUDE)
+    lon = opts.get(CONF_LONGITUDE)
+    await async_load_registry(hass, lat, lon)
+
+    async def _refresh_registry(_now=None) -> None:
+        await async_refresh_registry(hass, lat, lon)
+
+    # Fire-and-forget on startup so a stale table is replaced without holding
+    # up setup, then on a timer. REFRESH_DAYS is the real cadence - the daily
+    # tick just checks the cache age.
+    hass.async_create_background_task(_refresh_registry(), "flights_above_registry")
+    entry.async_on_unload(
+        async_track_time_interval(hass, _refresh_registry, timedelta(days=1))
+    )
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 

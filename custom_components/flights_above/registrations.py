@@ -196,3 +196,185 @@ REGISTRY = GovRegistry()
 def lookup_government(hex_code: str | None) -> dict[str, Any] | None:
     """Module-level convenience wrapper around the shared registry."""
     return REGISTRY.lookup(hex_code)
+
+
+# --------------------------------------------------------------------------
+# Self-refresh
+#
+# The bundled snapshot ages. Rather than requiring a release for every FAA
+# update, the integration refreshes itself and writes the result beside Home
+# Assistant's own storage, which then takes precedence over the bundle.
+#
+# Everything here is best-effort. A failure leaves the previous table in place
+# and is logged at debug level; it never affects setup or flight tracking.
+# --------------------------------------------------------------------------
+
+REFRESH_DAYS = 30
+FAA_URL = "https://registry.faa.gov/database/ReleasableAircraft.zip"
+
+# A bare urllib/aiohttp UA is rejected with 403; the registry wants something
+# browser-shaped.
+_FAA_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"),
+    "Accept": "application/zip,*/*",
+}
+
+_TYPE_ACFT_ROTORCRAFT = "6"
+_TYPE_REGISTRANT_GOVERNMENT = "5"
+_DRONE_MFR_PREFIXES = (
+    "DJI", "AUTEL", "YUNEEC", "3D ROBOTICS", "PARROT", "SKYDIO", "FREEFLY",
+    "AGEAGLE", "INSPIRED FLIGHT", "WINGTRA", "QUANTUM SYSTEMS", "ENYU LUO",
+    "SENSEFLY", "EHANG", "XIAOMI", "POWERVISION",
+)
+
+
+def parse_faa_archive(raw: bytes) -> dict[str, list[str]]:
+    """Extract crewed government rotorcraft from the FAA zip.
+
+    Streams row by row: MASTER.txt is 194 MB uncompressed and must never be
+    materialised. Peak memory is a few MB, so this is safe on a Pi.
+
+    NOTE: runs on an executor thread. It is CPU-bound for roughly 10-60 s
+    depending on hardware and must not touch the event loop.
+    """
+    import csv
+    import io as _io
+    import zipfile
+
+    zf = zipfile.ZipFile(_io.BytesIO(raw))
+
+    def rows(name: str):
+        # utf-8-sig: these files carry a BOM which would otherwise leave the
+        # first column named '\ufeffCODE'.
+        with zf.open(name) as fh:
+            reader = csv.DictReader(_io.TextIOWrapper(fh, "utf-8-sig", errors="replace"))
+            for row in reader:
+                yield {(k or "").strip(): (v or "").strip() for k, v in row.items()}
+
+    types: dict[str, tuple[str, int]] = {}
+    for r in rows("ACFTREF.txt"):
+        if r.get("TYPE-ACFT") != _TYPE_ACFT_ROTORCRAFT:
+            continue
+        try:
+            seats = int(r.get("NO-SEATS") or 0)
+        except ValueError:
+            seats = 0
+        types[r.get("CODE", "")] = ((r.get("MFR") or "").upper(), seats)
+
+    table: dict[str, list[str]] = {}
+    for r in rows("MASTER.txt"):
+        if r.get("TYPE REGISTRANT") != _TYPE_REGISTRANT_GOVERNMENT:
+            continue
+        t = types.get(r.get("MFR MDL CODE", ""))
+        if not t:
+            continue
+        mfr, seats = t
+        # The FAA classes drones as rotorcraft; they never appear on ADS-B.
+        if seats < 2 or any(mfr.startswith(p) for p in _DRONE_MFR_PREFIXES):
+            continue
+        hx = (r.get("MODE S CODE HEX") or "").strip().upper()
+        if hx:
+            table[hx] = [
+                "N" + (r.get("N-NUMBER") or "").strip(),
+                (r.get("NAME") or "").strip(),
+                (r.get("STATE") or "").strip(),
+            ]
+    return table
+
+
+def cache_path(hass) -> str:
+    """Where the refreshed table lives - beside HA's own storage."""
+    return hass.config.path(".storage", "flights_above_gov_rotorcraft.json")
+
+
+def _needs_refresh(path: str) -> bool:
+    import time
+    try:
+        age_days = (time.time() - os.path.getmtime(path)) / 86400
+    except OSError:
+        return True                      # no cache yet
+    return age_days >= REFRESH_DAYS
+
+
+async def async_load_registry(hass, latitude=None, longitude=None) -> int:
+    """Load the best available table for this install.
+
+    Prefers a refreshed cache over the bundled snapshot. Returns the number of
+    entries loaded, or 0 when the install is outside the US and the feature is
+    therefore dormant.
+    """
+    if not location_is_us(latitude, longitude, getattr(hass.config, "country", None)):
+        _LOGGER.debug("Not a US location; government aircraft lookups disabled")
+        return 0
+
+    cache = cache_path(hass)
+    target = cache if os.path.exists(cache) else DATA_FILE
+    return await hass.async_add_executor_job(REGISTRY.load, target)
+
+
+async def async_refresh_registry(hass, latitude=None, longitude=None,
+                                 force: bool = False) -> bool:
+    """Refresh from the FAA registry if the cache is older than REFRESH_DAYS.
+
+    Returns True only when a new table was fetched, parsed and loaded.
+
+    Best-effort throughout: any failure leaves the existing table untouched.
+    The download is ~73 MB for ~87 KB of useful data, which is unavoidable -
+    the archive is one zip and DEREG.txt alone is 278 MB uncompressed.
+    """
+    if not location_is_us(latitude, longitude, getattr(hass.config, "country", None)):
+        return False
+
+    cache = cache_path(hass)
+    if not force and not _needs_refresh(cache):
+        return False
+
+    import aiohttp
+    from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+    _LOGGER.debug("Refreshing government aircraft registry from %s", FAA_URL)
+    try:
+        session = async_get_clientsession(hass)
+        async with session.get(
+            FAA_URL, headers=_FAA_HEADERS,
+            timeout=aiohttp.ClientTimeout(total=600),
+        ) as resp:
+            if resp.status != 200:
+                _LOGGER.debug("FAA registry returned HTTP %s", resp.status)
+                return False
+            raw = await resp.read()
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Could not download the FAA registry", exc_info=True)
+        return False
+
+    try:
+        # Parsing is CPU-bound for tens of seconds - never on the event loop.
+        table = await hass.async_add_executor_job(parse_faa_archive, raw)
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Could not parse the FAA registry", exc_info=True)
+        return False
+
+    if not table:
+        _LOGGER.debug("FAA registry parsed to an empty table; keeping the old one")
+        return False
+
+    payload = {"schema": 1, "source": "FAA Releasable Aircraft Database",
+               "count": len(table), "aircraft": table}
+
+    def _write() -> None:
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        tmp = cache + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, separators=(",", ":"))
+        os.replace(tmp, cache)           # atomic; never a half-written cache
+
+    try:
+        await hass.async_add_executor_job(_write)
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Could not write the registry cache", exc_info=True)
+        return False
+
+    await hass.async_add_executor_job(REGISTRY.load, cache)
+    _LOGGER.info("Government aircraft registry refreshed: %s entries", len(table))
+    return True
