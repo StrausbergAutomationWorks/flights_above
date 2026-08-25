@@ -40,6 +40,7 @@ from .const import (
 from .aircraft import describe_aircraft, lookup_manufacturer
 from .airlines import lookup_operator
 from .registrations import lookup_government
+from .route_check import describe_rejection, route_is_plausible
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -517,6 +518,32 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         }
 
         route = await self._get_route(route_callsign)
+
+        # adsbdb maps a callsign to ONE historical route, but airlines
+
+        # reuse flight numbers across city pairs, so the answer is often
+
+        # a real route flown by that callsign on some other day. Measured
+
+        # near ORD 2026-08-25: 47% of answers were for city pairs whose
+
+        # great circle passes hundreds of km away. Showing nothing beats
+
+        # showing MEM-DCA for an aircraft on approach to O'Hare.
+
+        if route and not route_is_plausible(route, lat, lon, altitude_ft):
+
+            _LOGGER.debug(
+
+                "Discarding implausible route for %s: %s",
+
+                display_callsign,
+
+                describe_rejection(route, lat, lon, altitude_ft),
+
+            )
+
+            route = None
         if not route and self.require_route:
             # We couldn't identify where this flight is going; skip it.
             return None
