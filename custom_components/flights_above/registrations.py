@@ -138,6 +138,7 @@ class GovRegistry:
     def __init__(self) -> None:
         self._table: dict[str, list[str]] = {}
         self._loaded = False
+        self._warned_unloaded = False
 
     def load(self, path: str | None = None) -> int:
         """Load the table from disk. Returns how many entries were read.
@@ -169,11 +170,28 @@ class GovRegistry:
 
         Returns None for anything outside the US ICAO block without touching
         the table, so non-US traffic costs a single integer comparison.
+
+        ⚠ This runs in the event loop, so it must NEVER touch disk. The table
+        is loaded once during setup via async_load_registry, which uses an
+        executor. An earlier version lazily called self.load() from here and
+        Home Assistant correctly flagged it:
+
+            Detected blocking call to open ... inside the event loop by
+            custom integration 'flights_above'
+
+        If the table was never loaded, return None rather than loading it -
+        that is the same behaviour as not having the feature.
         """
         if not is_us_hex(hex_code):
             return None
         if not self._loaded:
-            self.load()
+            if not self._warned_unloaded:
+                self._warned_unloaded = True
+                _LOGGER.debug(
+                    "Government registry not loaded; lookups return None. "
+                    "async_load_registry should have run during setup."
+                )
+            return None
         row = self._table.get(str(hex_code).upper())
         if not row:
             return None
