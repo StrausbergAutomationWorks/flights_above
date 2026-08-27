@@ -537,13 +537,9 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         if route and not route_is_plausible(route, lat, lon, altitude_ft):
 
             _LOGGER.debug(
-
                 "Discarding implausible route for %s: %s",
-
                 display_callsign,
-
                 describe_rejection(route, lat, lon, altitude_ft),
-
             )
 
             # Second opinion. The two sources are NOT copies of each other:
