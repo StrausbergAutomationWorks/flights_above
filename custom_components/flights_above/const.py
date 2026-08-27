@@ -35,20 +35,31 @@ ROUTE_MISS_TTL = 3600  # 1 hour
 # Data sources (all free, no API key required).
 # Position sources are tried in order until one responds successfully.
 # Path shapes DIFFER between providers, so each entry is a full template:
-# adsb.lol and airplanes.live use /point/{lat}/{lon}/{nm}, adsb.fi uses
+# adsb.lol uses /point/{lat}/{lon}/{nm}, adsb.fi uses
 # /lat/{lat}/lon/{lon}/dist/{nm}. Response keys differ too ("ac" vs
 # "aircraft"), which the parser already handles.
 # NOTE: adsb.fi's terms require attribution with a link - see ATTRIBUTION.
 ADSB_POINT_URLS = [
     "https://api.adsb.lol/v2/point/{lat}/{lon}/{nm}",
     "https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}",
-    "https://api.airplanes.live/v2/point/{lat}/{lon}/{nm}",
+    # airplanes.live REMOVED 2026-08-26 - OPERATIONAL, not licensing.
+    # api.airplanes.live/v2/point/... returns HTTP 403 with a request to email
+    # contact@airplanes.live, so it supplies no data while still costing a
+    # request every update cycle.
+    #
+    # Their API guide (airplanes.live/api-guide/) documents this endpoint as
+    # publicly available: no key, no feeder required, 1 request/second,
+    # non-commercial. airplanes.live/api/ lists a free tier of 500 req/day.
+    # Why we get a 403 is unknown; an access request has been sent.
+    #
+    # If access is restored, note 500/day cannot sustain a 30s poll
+    # (~2,880/day) - it would suit a third fallback, not a primary source.
 ]
 # Route / airport lookup by callsign.
 ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/"
 
 ATTRIBUTION = (
-    "Live data from adsb.lol, adsb.fi (https://adsb.fi) and airplanes.live; "
+    "Live data from adsb.lol and adsb.fi (https://adsb.fi); "
     "routes from adsbdb.com"
 )
 
@@ -57,4 +68,4 @@ REQUEST_TIMEOUT = 25  # seconds
 
 # Nautical miles per kilometre conversion helpers
 KM_PER_NM = 1.852
-MAX_RADIUS_NM = 250  # adsb.lol / airplanes.live point endpoint hard cap
+MAX_RADIUS_NM = 250  # adsb.lol point endpoint hard cap
