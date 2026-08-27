@@ -505,6 +505,9 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
             "destination_iata": None,
             "destination_icao": None,
             "destination_country": None,
+            # Which source supplied the route: "adsbdb", "hexdb", or None when
+            # no route survived the plausibility check.
+            "route_source": None,
             "hours_flown": None,
             "hours_remaining": None,
             "hours_total": None,
@@ -581,6 +584,7 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
                     "destination_iata": route["destination_iata"],
                     "destination_icao": route["destination_icao"],
                     "destination_country": route["destination_country"],
+                    "route_source": route.get("route_source"),
                 }
             )
             self._add_progress(flight, route, lat, lon, speed_kmh)
