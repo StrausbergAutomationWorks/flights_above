@@ -41,6 +41,7 @@ _FLIGHT_ATTRS = (
     "destination_iata",
     "destination_icao",
     "destination_country",
+    "route_source",
     "hours_flown",
     "hours_remaining",
     "hours_total",
