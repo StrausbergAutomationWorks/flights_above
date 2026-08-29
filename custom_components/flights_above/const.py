@@ -58,6 +58,13 @@ ADSB_POINT_URLS = [
 # Route / airport lookup by callsign.
 ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/"
 
+# Shown as the airport NAME when a code is present but cannot be resolved to
+# a named airport - an ambiguous or unlisted identifier. Deliberately NOT the
+# same as an absent route: "Chicago O'Hare to Somewhere" still tells you where
+# the flight departed, whereas a blank tells you nothing.
+# WARNING: display only. Never written into stored or published data.
+UNRESOLVED_AIRPORT_NAME = "Somewhere"
+
 ATTRIBUTION = (
     "Live data from adsb.lol and adsb.fi (https://adsb.fi); "
     "routes from adsbdb.com"
