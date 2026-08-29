@@ -43,18 +43,28 @@ ROUTE_MISS_TTL = 3600  # 1 hour
 ADSB_POINT_URLS = [
     "https://api.adsb.lol/v2/point/{lat}/{lon}/{nm}",
     "https://opendata.adsb.fi/api/v2/lat/{lat}/lon/{lon}/dist/{nm}",
-    # airplanes.live REMOVED 2026-08-26. It returns HTTP 403 with a request to
-    # email contact@airplanes.live, so it supplied no data. More importantly
-    # their Legal Terms forbid this use outright: section 3 bars automated
-    # access, and section 4 bars distributing "any automated system, including
-    # ... scraper ... that accesses the Services". Section 2 grants only a
-    # NON-TRANSFERABLE personal licence, so permission obtained by one person
-    # cannot cover users who install this integration.
-    # Do not re-add without written permission that explicitly covers
-    # redistribution. See 03_FLIGHTS_ABOVE.md.
+    # airplanes.live REMOVED 2026-08-26 - OPERATIONAL, not licensing.
+    # api.airplanes.live/v2/point/... returns HTTP 403 with a request to email
+    # contact@airplanes.live, so it supplies no data while still costing a
+    # request every update cycle.
+    #
+    # Their API guide (airplanes.live/api-guide/) documents this endpoint as
+    # publicly available: no key, no feeder required, 1 request/second,
+    # non-commercial. airplanes.live/api/ lists a free tier of 500 req/day.
+    # Why we get a 403 is unknown; an access request has been sent.
+    #
+    # If access is restored, note 500/day cannot sustain a 30s poll
+    # (~2,880/day) - it would suit a third fallback, not a primary source.
 ]
 # Route / airport lookup by callsign.
 ADSBDB_CALLSIGN_URL = "https://api.adsbdb.com/v0/callsign/"
+
+# Shown as the airport NAME when a code is present but cannot be resolved to
+# a named airport - an ambiguous or unlisted identifier. Deliberately NOT the
+# same as an absent route: "Chicago O'Hare to Somewhere" still tells you where
+# the flight departed, whereas a blank tells you nothing.
+# WARNING: display only. Never written into stored or published data.
+UNRESOLVED_AIRPORT_NAME = "Somewhere"
 
 ATTRIBUTION = (
     "Live data from adsb.lol and adsb.fi (https://adsb.fi); "

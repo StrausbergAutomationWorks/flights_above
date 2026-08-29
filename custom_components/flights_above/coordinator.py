@@ -17,6 +17,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    UNRESOLVED_AIRPORT_NAME,
     ADSB_POINT_URLS,
     ADSBDB_CALLSIGN_URL,
     CONF_COUNT,
@@ -255,6 +256,24 @@ def _safe_callsign(value) -> str:
         return ""
     return re.sub(r"[^A-Za-z0-9]", "", str(value)).upper()[:10]
 
+
+
+def _name_unresolved_airports(flight: dict) -> None:
+    """Give a name to an airport we have a code for but cannot identify.
+
+    Sources sometimes return a code with no airport record behind it - an
+    ambiguous identifier, or one absent from the lookup table. The code is
+    real, so that end of the route is not unknown; only its NAME is.
+
+    WARNING: only fires when a code is present. A flight with no route at all
+    keeps name = None and renders as "???" - claiming "Somewhere" there would
+    assert partial knowledge we do not have.
+    """
+    for end in ("origin", "destination"):
+        has_code = bool(flight.get("%s_iata" % end)
+                        or flight.get("%s_icao" % end))
+        if has_code and not flight.get("%s_name" % end):
+            flight["%s_name" % end] = UNRESOLVED_AIRPORT_NAME
 
 class FlightsAboveCoordinator(DataUpdateCoordinator):
     """Fetch aircraft overhead and enrich them with route + progress data."""
@@ -585,6 +604,7 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
             )
             self._add_progress(flight, route, lat, lon, speed_kmh)
 
+        _name_unresolved_airports(flight)
         flight["route_line"] = self._build_route_line(flight)
         return flight
 
