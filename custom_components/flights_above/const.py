@@ -18,7 +18,23 @@ DEFAULT_SCAN_INTERVAL = 60  # seconds
 DEFAULT_REQUIRE_ROUTE = True
 MIN_COUNT = 1
 # LOCAL ONLY - do NOT include in a PR to Tobhs.
-MAX_COUNT = 8
+MAX_COUNT = 64
+# LOCAL CHANGE: ceiling raised from 8 for the Chicagoland map, which wants ORD
+# and out to St. Charles at a 56 km radius. Upstream ships 3.
+#
+# ⚠ THIS IS A VALIDATION CEILING, NOT THE SLOT COUNT. config_flow uses it as
+# vol.Range(max=MAX_COUNT); the live number is CONF_COUNT on the config entry,
+# defaulting to DEFAULT_COUNT = 3. Raising this permits a larger count to be
+# selected in the options flow - it does not create slots.
+#
+# ⚠ Slot count does NOT drive route lookups. coordinator.py resolves a route
+# for every aircraft in RADIUS and only then slices to self.count, so widening
+# the radius is what costs; more slots costs nothing.
+#
+# ⚠ DAMAGE ITEM 2. Each slot is an entity with unique_id
+# f"{entry_id}_flight_{index}". Selecting 64 creates 56 new entities
+# PERMANENTLY; reverting to 8 leaves 56 orphans in the registry - the same
+# mess as backlog item 16. Choose the number once, deliberately.
 MAX_RADIUS_KM = 400.0
 MIN_SCAN_INTERVAL = 15
 MAX_SCAN_INTERVAL = 3600
