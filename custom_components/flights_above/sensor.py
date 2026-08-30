@@ -16,6 +16,7 @@ from .coordinator import FlightsAboveCoordinator
 _FLIGHT_ATTRS = (
     "registration",
     "aircraft_type",
+    "emitter_category",
     "aircraft_name",
     "aircraft_manufacturer",
     "operator",
