@@ -213,7 +213,21 @@ def _build_progress_bar(pct: float | None, width: int = 16) -> str | None:
 # Defensive limits for untrusted API data.
 MAX_AIRCRAFT_PER_UPDATE = 300  # ignore absurdly large responses
 MAX_HISTORY = 200  # cap remembered flights to bound memory
-MAX_ROUTE_CACHE = 500  # cap resolved-route cache
+MAX_ROUTE_CACHE = 5000  # cap resolved-route cache
+# ⚠ Raised from 500. That figure was sized for the default 15 km radius and
+# three slots. Routes are resolved for EVERY aircraft in radius before the list
+# is sliced to self.count (see below), so a wider radius - not more slots -
+# drives cache pressure. At a 56 km radius with ~50 aircraft cycling every few
+# minutes, 500 entries churn in an hour or two and the 6-hour TTL is never
+# reached: the cache stops caching and becomes a short-term buffer.
+#
+# The entries are small tuples; 5,000 is a few MB.
+#
+# ⚠ Eviction below sorts the WHOLE cache on every insertion once full. That is
+# fine at this size but it is the wrong structure for the job - a bounded
+# deque or an OrderedDict would be O(1). Left as-is to keep this change small;
+# worth revisiting if the radius grows again.
+MAX_TEXT_LEN = 60  # cap any free-text field from the API
 
 
 def _finite(value) -> float | None:
