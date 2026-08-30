@@ -1,6 +1,6 @@
 """Build the bundled government-rotorcraft table from the FAA registry.
 
-Downloads the FAA Releasable Aircraft Database, extracts crewed rotorcraft
+Downloads the FAA Releasable Aircraft Database, extracts government aircraft
 registered to government entities, and writes a compact JSON keyed by Mode S
 hex - which is what ADS-B actually transmits.
 
@@ -32,6 +32,28 @@ HEADERS = {
 TYPE_ACFT_ROTORCRAFT = "6"
 TYPE_REGISTRANT_GOVERNMENT = "5"
 
+# LOCAL CHANGE: federal operators registered as an LLC rather than as
+# government. EXACT names only - keyword matching was measured and rejected:
+#   "MARSHAL" -> 248 hits, 4 real (people surnamed Marshall, Marshall
+#                University, Marshall Soaring Club)
+#   "ICE"     -> 14 hits, ZERO real (Ice Man Holdings, Two Bag Ice,
+#                Commerical Ice & Refrigeration)
+#   "CUSTOMS" -> crop-spraying and custom-fabrication outfits
+#
+# ⚠ DHS OPERATIONS LLC (20 aircraft) is deliberately NOT here. Nineteen are
+# Cessna 172s - a training fleet, not a mission fleet - and "DHS" may simply
+# be someone's initials. Not added on an acronym.
+#
+# ⚠ ICE (Immigration and Customs Enforcement) has NO aircraft under its own
+# name. Its air operations run through DHS registrations and CONTRACTED
+# carriers with ordinary commercial names, so no registry search reaches
+# ICE Air flights. Military aircraft on serials rather than N-numbers are not
+# in this civil registry at all (SAM, PAT, RCH callsigns).
+FEDERAL_OPERATOR_ALLOWLIST = {
+    "CBP AIR LOGISTICS LLC",      # Citation 525C/680, King Air B100
+    "HOMELAND AVIATION LLC",      # Cessna R172K, Aviat A-1C
+}
+
 # The FAA classes drones as rotorcraft, so a bare TYPE-ACFT filter sweeps in
 # every registered municipal Phantom and Mavic. Those never appear on ADS-B.
 DRONE_MFR_PREFIXES = (
@@ -58,8 +80,13 @@ def build(raw: bytes) -> dict:
     # ACFTREF first, filtered to rotorcraft so the lookup dict stays small.
     types: dict[str, tuple[str, int]] = {}
     for r in _rows(zf, "ACFTREF.txt"):
-        if r.get("TYPE-ACFT") != TYPE_ACFT_ROTORCRAFT:
-            continue
+        # LOCAL CHANGE: the rotorcraft filter is gone.
+        # It excluded every government FIXED-WING aircraft, so a government
+        # Gulfstream fell through to lookup_operator and displayed as
+        # "Private". Measured: rotorcraft-only 1,594 entries; all government
+        # aircraft 5,723 (0.32 MB) - 2,120 fixed-wing single, 792 fixed-wing
+        # multi, 920 additional rotorcraft that the seat filter had removed.
+        pass
         try:
             seats = int(r.get("NO-SEATS") or 0)
         except ValueError:
@@ -68,14 +95,17 @@ def build(raw: bytes) -> dict:
 
     out: dict[str, list[str]] = {}
     for r in _rows(zf, "MASTER.txt"):
-        if r.get("TYPE REGISTRANT") != TYPE_REGISTRANT_GOVERNMENT:
+        if (r.get("TYPE REGISTRANT") != TYPE_REGISTRANT_GOVERNMENT
+                and (r.get("NAME") or "").strip().upper()
+                not in FEDERAL_OPERATOR_ALLOWLIST):
             continue
         t = types.get(r.get("MFR MDL CODE", ""))
         if not t:
             continue
         mfr, seats = t
-        if seats < 2 or any(mfr.startswith(p) for p in DRONE_MFR_PREFIXES):
-            continue
+        # LOCAL CHANGE: drones are kept. A government UAS that does
+        # broadcast is worth naming, and the cost is 1,186 entries / 70 KB.
+        pass
         hx = (r.get("MODE S CODE HEX") or "").strip().upper()
         if not hx:
             continue
@@ -97,7 +127,7 @@ def main() -> None:
 
     print("parsing ...")
     table = build(raw)
-    print(f"  {len(table):,} crewed government rotorcraft")
+    print(f"  {len(table):,} government aircraft (all types, drones included)")
 
     payload = {"schema": 1, "source": "FAA Releasable Aircraft Database",
                "count": len(table), "aircraft": table}
