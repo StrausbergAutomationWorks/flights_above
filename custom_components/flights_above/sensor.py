@@ -52,6 +52,11 @@ _FLIGHT_ATTRS = (
     "co2_so_far_kg",
     "co2_remaining_kg",
     "route_line",
+    # Unix seconds of the last sighting. The coordinator keeps a flight
+    # for HISTORY_TTL (30 min) so a card stays readable after the aircraft
+    # has passed; a MAP wants to drop it far sooner. Publishing the
+    # timestamp lets each consumer choose instead of forcing one TTL.
+    "last_seen",
 )
 
 
