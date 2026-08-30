@@ -213,7 +213,20 @@ def _build_progress_bar(pct: float | None, width: int = 16) -> str | None:
 # Defensive limits for untrusted API data.
 MAX_AIRCRAFT_PER_UPDATE = 300  # ignore absurdly large responses
 MAX_HISTORY = 200  # cap remembered flights to bound memory
-MAX_ROUTE_CACHE = 500  # cap resolved-route cache
+MAX_ROUTE_CACHE = 5000  # cap resolved-route cache
+# ⚠ Raised from 500. That figure was sized for the default 15 km radius and
+# three slots. Routes are resolved for EVERY aircraft in radius before the list
+# is sliced to self.count (see below), so a wider radius - not more slots -
+# drives cache pressure. At a 56 km radius with ~50 aircraft cycling every few
+# minutes, 500 entries churn in an hour or two and the 6-hour TTL is never
+# reached: the cache stops caching and becomes a short-term buffer.
+#
+# The entries are small tuples; 5,000 is a few MB.
+#
+# ⚠ Eviction below sorts the WHOLE cache on every insertion once full. That is
+# fine at this size but it is the wrong structure for the job - a bounded
+# deque or an OrderedDict would be O(1). Left as-is to keep this change small;
+# worth revisiting if the radius grows again.
 MAX_TEXT_LEN = 60  # cap any free-text field from the API
 
 
@@ -458,6 +471,16 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         registration = _clean_text(ac.get("r"), 12)
         squawk = _clean_text(ac.get("squawk"), 6)
         aircraft_type = _clean_text(ac.get("t"), 8)
+        # ADS-B emitter category as transmitted: A1-A7 aeroplane by
+        # weight, A7 rotorcraft, B1 glider, B2 lighter-than-air,
+        # B6 UAV, C1-C3 surface vehicle. Passed through RAW - mapping a
+        # category to an icon is a display decision, not ours.
+        #
+        # Worth having because it answers "what kind of thing is this"
+        # when the type code cannot: measured, 3 of 67 aircraft had no
+        # type code and all three carried a category. For surface
+        # vehicles it is often the ONLY signal.
+        emitter_category = _clean_text(ac.get("category"), 3)
         emissions_class = _emissions_class(aircraft_type)
         seats_typical, people_on_board = _people_on_board(
             aircraft_type, emissions_class
@@ -497,6 +520,7 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
             "callsign": display_callsign,
             "registration": registration,
             "aircraft_type": aircraft_type,
+            "emitter_category": emitter_category,
             "aircraft_name": aircraft_name,
             "aircraft_manufacturer": aircraft_manufacturer,
             "operator": operator,
