@@ -17,6 +17,22 @@ _FLIGHT_ATTRS = (
     "registration",
     "aircraft_type",
     "emitter_category",
+    # The Mode S address, as broadcast. Used internally as the history key and
+    # as the argument to lookup_government(), so it was never published -
+    # reasonable for a join key, but consumers need it:
+    #
+    #   * every public lookup service (adsbdb, hexdb, ADS-B Exchange) accepts
+    #     the hex and several accept nothing else, so a user cannot research
+    #     an aircraft they can see without it
+    #   * it is the only stable identifier. Keying on registration is fragile:
+    #     a military serial and an N-number look alike, and foreign aircraft
+    #     may have neither a registration nor a resolvable operator
+    #   * verifying that a specific aircraft was correctly suppressed requires
+    #     the identifier the suppression list keys on
+    #
+    # It discloses nothing new: the aircraft broadcasts it unencrypted and it
+    # is already the primary key of every feed this integration reads.
+    "hex",
     "aircraft_name",
     "aircraft_manufacturer",
     "operator",
