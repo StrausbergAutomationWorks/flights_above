@@ -30,6 +30,21 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
+# ⚠ NO TABLE IS SHIPPED. This path is where a bundled snapshot WOULD live;
+# it is deliberately absent, and every load path handles that - load() returns
+# 0 on a missing file and lookup_government() returns None on an empty table.
+#
+# Two reasons not to ship one:
+#
+#   * The integration refreshes itself at setup. __init__.py fires
+#     async_refresh_registry as a background task immediately, then daily, and
+#     _needs_refresh() is True when no cache exists - so a fresh install has a
+#     current table within minutes, not after REFRESH_DAYS.
+#   * A snapshot cannot be kept current. Measured: 456 of 5,730 government
+#     aircraft are on the FAA LADD list, and 8% of that table would go stale
+#     the moment an operator enrolled. Shipping the FAA's own download instead
+#     of a copy of it means every install has data as fresh as its last
+#     refresh, obtained directly from the source under no agreement.
 DATA_FILE = os.path.join(os.path.dirname(__file__), "data", "gov_rotorcraft.json")
 
 # US ICAO 24-bit allocation. Exact, not heuristic.
