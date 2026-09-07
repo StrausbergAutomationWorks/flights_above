@@ -255,6 +255,16 @@ _FAA_HEADERS = {
 
 _TYPE_ACFT_ROTORCRAFT = "6"
 _TYPE_REGISTRANT_GOVERNMENT = "5"
+
+# LOCAL CHANGE. Federal operators registered as an LLC rather than as
+# government, so a registrant-code filter alone misses them. EXACT names only -
+# keyword matching was measured and rejected: "MARSHAL" gives 248 hits and 4
+# real ones (people surnamed Marshall, Marshall University, Marshall Soaring
+# Club); "ICE" gives 14 and ZERO real ones (Ice Man Holdings, Two Bag Ice).
+_FEDERAL_OPERATOR_ALLOWLIST = {
+    "CBP AIR LOGISTICS LLC",
+    "HOMELAND AVIATION LLC",
+}
 _DRONE_MFR_PREFIXES = (
     "DJI", "AUTEL", "YUNEEC", "3D ROBOTICS", "PARROT", "SKYDIO", "FREEFLY",
     "AGEAGLE", "INSPIRED FLIGHT", "WINGTRA", "QUANTUM SYSTEMS", "ENYU LUO",
@@ -287,8 +297,10 @@ def parse_faa_archive(raw: bytes) -> dict[str, list[str]]:
 
     types: dict[str, tuple[str, int]] = {}
     for r in rows("ACFTREF.txt"):
-        if r.get("TYPE-ACFT") != _TYPE_ACFT_ROTORCRAFT:
-            continue
+        # LOCAL CHANGE: no rotorcraft filter. It excluded every government
+        # FIXED-WING aircraft, so a government Gulfstream fell through to
+        # lookup_operator and displayed as "Private". Measured: rotorcraft
+        # only 1,595 entries; all government aircraft 5,730.
         try:
             seats = int(r.get("NO-SEATS") or 0)
         except ValueError:
@@ -297,15 +309,18 @@ def parse_faa_archive(raw: bytes) -> dict[str, list[str]]:
 
     table: dict[str, list[str]] = {}
     for r in rows("MASTER.txt"):
-        if r.get("TYPE REGISTRANT") != _TYPE_REGISTRANT_GOVERNMENT:
+        if (r.get("TYPE REGISTRANT") != _TYPE_REGISTRANT_GOVERNMENT
+                and (r.get("NAME") or "").strip().upper()
+                not in _FEDERAL_OPERATOR_ALLOWLIST):
             continue
         t = types.get(r.get("MFR MDL CODE", ""))
         if not t:
             continue
         mfr, seats = t
         # The FAA classes drones as rotorcraft; they never appear on ADS-B.
-        if seats < 2 or any(mfr.startswith(p) for p in _DRONE_MFR_PREFIXES):
-            continue
+        # LOCAL CHANGE: drones kept. A government UAS that does broadcast is
+        # worth naming, and the cost is ~1,186 entries.
+        del seats, mfr
         hx = (r.get("MODE S CODE HEX") or "").strip().upper()
         if hx:
             table[hx] = [
