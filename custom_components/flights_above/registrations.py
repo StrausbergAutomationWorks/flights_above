@@ -231,6 +231,161 @@ def lookup_government(hex_code: str | None) -> dict[str, Any] | None:
     return REGISTRY.lookup(hex_code)
 
 
+
+# --------------------------------------------------------------------------
+# Owner lookup
+#
+# The government table names 5,726 aircraft. Everything else - private jets,
+# flight school Cessnas, air ambulances, corporate turboprops - falls through
+# to lookup_operator, which can only match airline designators, and therefore
+# shows "Private". Measured: 28 of 52 occupied slots.
+#
+# ⚠ SQLITE, NOT A DICT, and the reason is measured. 181,538 entries are 2.32 MB
+# gzipped and 7.63 MB as JSON, but 51.6 MB as a Python dict - twenty-two times
+# the file size. parse_faa_archive's docstring promises "peak memory is a few
+# MB, so this is safe on a Pi" and that promise is load-bearing. On disk the
+# same table is 10.7 MB and a lookup costs about 51 microseconds.
+#
+# ⚠ NOTHING IS SHIPPED. This is built from the archive the integration ALREADY
+# downloads every REFRESH_DAYS for the government table.
+#
+# ⚠ INDIVIDUAL REGISTRANTS ARE EXCLUDED. Section 803 of the FAA
+# Reauthorization Act of 2024 (49 USC 44114, effective 2025-03-28) defines
+# personally identifiable information to include the name of the owner where
+# the owner is an individual. TYPE REGISTRANT = 1 is dropped: 126,404 of
+# 316,483 rows. That sounds fatal to the feature and is not - measured against
+# 28 unnamed aircraft overhead, 26 would still be named, because light aircraft
+# near a city are overwhelmingly flight school and rental fleets registered to
+# companies.
+# --------------------------------------------------------------------------
+
+_TYPE_REGISTRANT_INDIVIDUAL = "1"
+
+
+def owner_db_path(hass) -> str:
+    return hass.config.path(".storage", "flights_above_owners.sqlite")
+
+
+def build_owner_db(raw: bytes, db_path: str) -> int:
+    """Extract owners from the FAA archive into SQLite. Returns the row count.
+
+    ⚠ Runs on an executor thread alongside parse_faa_archive. CPU-bound.
+    ⚠ Writes to a temporary file and renames, so a failure part-way through
+    leaves the previous database intact rather than a half-built one.
+    """
+    import csv
+    import io as _io
+    import sqlite3
+    import zipfile
+
+    tmp = db_path + ".new"
+    for p in (tmp, tmp + "-wal", tmp + "-shm"):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
+    zf = zipfile.ZipFile(_io.BytesIO(raw))
+    con = sqlite3.connect(tmp)
+    n = 0
+    try:
+        con.execute("PRAGMA journal_mode=OFF")
+        con.execute("PRAGMA synchronous=OFF")
+        con.execute("CREATE TABLE owners (hex TEXT PRIMARY KEY, reg TEXT, "
+                    "owner TEXT)")
+        with zf.open("MASTER.txt") as fh:
+            reader = csv.DictReader(_io.TextIOWrapper(fh, "utf-8-sig",
+                                                      errors="replace"))
+            batch = []
+            for row in reader:
+                r = {(k or "").strip(): (v or "").strip()
+                     for k, v in row.items()}
+                if r.get("STATUS CODE") != "V":
+                    continue
+                if r.get("TYPE REGISTRANT") == _TYPE_REGISTRANT_INDIVIDUAL:
+                    continue
+                hx = (r.get("MODE S CODE HEX") or "").upper()
+                name = r.get("NAME") or ""
+                if not hx or not name:
+                    continue
+                batch.append((hx, "N" + (r.get("N-NUMBER") or ""), name[:48]))
+                if len(batch) >= 5000:
+                    con.executemany("INSERT OR REPLACE INTO owners "
+                                    "VALUES (?,?,?)", batch)
+                    n += len(batch)
+                    batch = []
+            if batch:
+                con.executemany("INSERT OR REPLACE INTO owners VALUES (?,?,?)",
+                                batch)
+                n += len(batch)
+        con.commit()
+    finally:
+        con.close()
+    os.replace(tmp, db_path)
+    return n
+
+
+class OwnerRegistry:
+    """Read-only owner lookups, held open for the life of the process."""
+
+    def __init__(self) -> None:
+        self._con = None
+        self.count = 0
+
+    def open(self, db_path: str) -> int:
+        import sqlite3
+        self.close()
+        if not os.path.exists(db_path):
+            return 0
+        try:
+            self._con = sqlite3.connect(
+                "file:%s?mode=ro" % db_path.replace("\\", "/"),
+                uri=True, check_same_thread=False)
+            self.count = self._con.execute(
+                "SELECT COUNT(*) FROM owners").fetchone()[0]
+        except Exception:  # noqa: BLE001
+            # ⚠ Degrade, never raise. A missing or corrupt database must not
+            # affect setup or flight tracking - the same contract GovRegistry
+            # already honours.
+            _LOGGER.debug("Owner database unavailable", exc_info=True)
+            self._con = None
+            self.count = 0
+        return self.count
+
+    def close(self) -> None:
+        if self._con is not None:
+            try:
+                self._con.close()
+            except Exception:  # noqa: BLE001
+                pass
+        self._con = None
+        self.count = 0
+
+    def lookup(self, hex_code):
+        if self._con is None or not hex_code:
+            return None
+        try:
+            row = self._con.execute(
+                "SELECT reg, owner FROM owners WHERE hex=?",
+                (hex_code.strip().upper(),)).fetchone()
+        except Exception:  # noqa: BLE001
+            return None
+        return {"registration": row[0], "owner": row[1]} if row else None
+
+
+OWNERS = OwnerRegistry()
+
+
+def lookup_owner(hex_code):
+    """Registered owner for a Mode S address, or None.
+
+    ⚠ This is the TITLE HOLDER, which is often not the operator. Measured:
+    N964AV is "Avianca" to adsbdb and "Bank of Utah Trustee" to the FAA;
+    N553FX is "Flexjet" and "Citation X Parts LLC". Prefer an operator name
+    from any source that has one; this is the fallback that always works.
+    """
+    return OWNERS.lookup(hex_code)
+
 # --------------------------------------------------------------------------
 # Self-refresh
 #
@@ -358,7 +513,11 @@ async def async_load_registry(hass, latitude=None, longitude=None) -> int:
 
     cache = cache_path(hass)
     target = cache if os.path.exists(cache) else DATA_FILE
-    return await hass.async_add_executor_job(REGISTRY.load, target)
+    n = await hass.async_add_executor_job(REGISTRY.load, target)
+    # Opened here so a restart picks up an existing database without waiting
+    # for the next refresh.
+    await hass.async_add_executor_job(OWNERS.open, owner_db_path(hass))
+    return n
 
 
 async def async_refresh_registry(hass, latitude=None, longitude=None,
@@ -399,6 +558,16 @@ async def async_refresh_registry(hass, latitude=None, longitude=None,
     try:
         # Parsing is CPU-bound for tens of seconds - never on the event loop.
         table = await hass.async_add_executor_job(parse_faa_archive, raw)
+        # ⚠ Same archive, same executor pass. The 73 MB download is already
+        # paid for; extracting owners from it costs only CPU.
+        try:
+            rows = await hass.async_add_executor_job(
+                build_owner_db, raw, owner_db_path(hass))
+            OWNERS.open(owner_db_path(hass))
+            _LOGGER.debug("Owner database rebuilt: %d aircraft", rows)
+        except Exception:  # noqa: BLE001
+            # Never let the owner half break the government half.
+            _LOGGER.debug("Owner database rebuild failed", exc_info=True)
     except Exception:  # noqa: BLE001
         _LOGGER.debug("Could not parse the FAA registry", exc_info=True)
         return False

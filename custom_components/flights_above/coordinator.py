@@ -40,7 +40,7 @@ from .const import (
 )
 from .aircraft import describe_aircraft, lookup_manufacturer
 from .airlines import lookup_operator
-from .registrations import lookup_government
+from .registrations import lookup_government, lookup_owner
 from .route_check import describe_rejection, route_is_plausible
 
 _LOGGER = logging.getLogger(__name__)
@@ -494,7 +494,16 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         # by the Mode S address. Returns None outside the US ICAO block, so
         # this costs one integer comparison for non-US traffic.
         gov = lookup_government(hex_id)
+        # ⚠ Order matters. An airline designator is the best answer, the
+        # government table is next, and the registry is the fallback that
+        # always works. The registry holds the TITLE HOLDER, which is often a
+        # leasing shell or a trustee bank - N964AV is "Avianca" to adsbdb and
+        # "Bank of Utah Trustee" to the FAA - so it must never displace a real
+        # operator name.
+        owner_rec = None if operator_code else lookup_owner(hex_id)
         operator_category = None
+        if owner_rec and (not operator or "Private" in str(operator)):
+            operator = owner_rec["owner"]
         if gov:
             operator = gov["operator"] or operator
             operator_category = gov["operator_category"]
