@@ -500,7 +500,16 @@ class FlightsAboveCoordinator(DataUpdateCoordinator):
         # leasing shell or a trustee bank - N964AV is "Avianca" to adsbdb and
         # "Bank of Utah Trustee" to the FAA - so it must never displace a real
         # operator name.
-        owner_rec = None if operator_code else lookup_owner(hex_id)
+        # ⚠ Do NOT guard this on operator_code. lookup_operator ends with
+        #     return prefix, _OPERATORS.get(prefix)
+        # so an unknown three-letter prefix yields a CODE with a NULL NAME -
+        # CXK166 returns ('CXK', None). Guarding on the code skipped the owner
+        # lookup for exactly the aircraft that needed it, and the card stayed
+        # blank. Measured on the live instance before this was fixed.
+        #
+        # Always look up; the result is used below only when nothing better
+        # exists. A lookup is ~50 microseconds, so 52 aircraft cost 2.6 ms.
+        owner_rec = lookup_owner(hex_id)
         operator_category = None
         if owner_rec and (not operator or "Private" in str(operator)):
             operator = owner_rec["owner"]
